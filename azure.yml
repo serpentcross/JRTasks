@@ -1,0 +1,42 @@
+trigger: none  # Запуск только вручную или по расписанию
+schedules:
+  - cron: "0 0 * * *"  # Запуск каждый день в 00:00 UTC
+    displayName: "Очистка старых веток"
+    branches:
+      include:
+        - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - script: |
+      echo "Fetching branches older than 21 days..."
+      TOKEN="your-pat-token"
+      ORG="your-org"
+      PROJECT="your-project"
+
+      # Получаем список всех репозиториев
+      REPOS=$(curl -s -u :$TOKEN "https://dev.azure.com/$ORG/$PROJECT/_apis/git/repositories?api-version=7.1-preview.1" | jq -r '.value[].name')
+
+      for REPO in $REPOS; do
+        echo "Checking repository: $REPO"
+        
+        # Получаем все ветки
+        BRANCHES=$(curl -s -u :$TOKEN "https://dev.azure.com/$ORG/$PROJECT/_apis/git/repositories/$REPO/refs?filter=heads/&api-version=7.1-preview.1" | jq -r '.value[].name')
+
+        for BRANCH in $BRANCHES; do
+          if [[ "$BRANCH" != "refs/heads/main" && "$BRANCH" != "refs/heads/develop" ]]; then
+            LAST_COMMIT_DATE=$(curl -s -u :$TOKEN "https://dev.azure.com/$ORG/$PROJECT/_apis/git/repositories/$REPO/commits?searchCriteria.itemVersion.version=${BRANCH#refs/heads/}&$top=1&api-version=7.1-preview.1" | jq -r '.value[0].author.date')
+            
+            BRANCH_AGE=$(($(date +%s) - $(date -d "$LAST_COMMIT_DATE" +%s)))
+            BRANCH_AGE_DAYS=$((BRANCH_AGE / 86400))
+
+            if [[ $BRANCH_AGE_DAYS -gt 21 ]]; then
+              echo "🗑 Удаляем устаревшую ветку: $BRANCH (возраст: $BRANCH_AGE_DAYS дней)"
+              curl -X DELETE -s -u :$TOKEN "https://dev.azure.com/$ORG/$PROJECT/_apis/git/repositories/$REPO/refs?filter=${BRANCH//\//%2F}&api-version=7.1-preview.1"
+            fi
+          fi
+        done
+      done
+    displayName: "Удаление старых веток"
