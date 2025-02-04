@@ -54,17 +54,27 @@ steps:
               continue
           }
 
-          # Используем дату создания ветки
-          $branchCreationDate = Get-Date $branch.createdDate
+          # Получаем информацию о последнем коммите
+          $commitUri = "$API_BASE_URL/$($repo.id)/commits?searchCriteria.itemVersion.version=$branchName&`$top=1&api-version=7.1-preview.1"
+          $commitInfo = Invoke-RestMethod -Uri $commitUri -Headers $headers -Method Get
 
-          # Проверяем, если ветка старше 30 дней
-          $daysSinceCreation = ($currentDate - $branchCreationDate).Days
-          if ($daysSinceCreation -ge $daysOld) {
+          # Если нет коммитов, пропускаем
+          if (-not $commitInfo.value) {
+              Write-Host "    - $branchName (⚠️ Нет коммитов!)"
+              continue
+          }
+
+          # Дата последнего коммита
+          $lastCommitDate = Get-Date $commitInfo.value[0].author.date
+
+          # Проверяем, если коммит был сделан более 30 дней назад
+          $daysSinceLastCommit = ($currentDate - $lastCommitDate).Days
+          if ($daysSinceLastCommit -ge $daysOld) {
               if (-not $hasOldBranches) {
-                  Write-Host "  ⚠️  Устаревшие ветки (существуют $daysOld+ дней):"
+                  Write-Host "  ⚠️  Устаревшие ветки (существуют $daysOld+ дней без коммитов):"
                   $hasOldBranches = $true
               }
-              Write-Host "    - $branchName (Создана: $branchCreationDate, $daysSinceCreation дней назад)"
+              Write-Host "    - $branchName (Последний коммит: $lastCommitDate, $daysSinceLastCommit дней назад)"
           }
       }
 
