@@ -15,44 +15,66 @@ steps:
     inputs:
       targetType: 'inline'
       script: |
-        # === Конфигурация ===
-        $org = "your-org"          # Имя организации в Azure DevOps
-        $project = "your-project"  # Имя проекта
-        $token = "$(System.AccessToken)"  # Получение PAT через систему Azure DevOps
-        $branch = "refs/heads/main" # Основная ветка для политики
+  # === Конфигурация ===
+  $org = "your-org"          # Имя организации в Azure DevOps
+  $project = "your-project"  # Имя проекта
+  $token = "$(System.AccessToken)"  # Получение PAT через систему Azure DevOps
+  $daysOld = 21  # Порог "устаревших" веток (в днях)
 
-        # === Получаем все репозитории ===
-        $headers = @{Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$token"))}
-        $repos = Invoke-RestMethod -Uri "https://dev.azure.com/$org/$project/_apis/git/repositories?api-version=7.1-preview.1" -Headers $headers -Method Get
+  # === Константы API ===
+  $API_BASE_URL = "https://dev.azure.com/$org/$project/_apis/git/repositories"
 
-        # Фильтруем репозитории по префиксу 'mana-'
-        $filteredRepos = $repos.value | Where-Object { $_.name -match "^mana-.*" }
+  # === Получаем все репозитории ===
+  $headers = @{Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$token"))}
+  $repos = Invoke-RestMethod -Uri "$API_BASE_URL?api-version=7.1-preview.1" -Headers $headers -Method Get
 
-        foreach ($repo in $filteredRepos) {
-            Write-Host "Проверка репозитория: $($repo.name)"
-            
-            # Получаем все ветки
-            $branches = Invoke-RestMethod -Uri "https://dev.azure.com/$org/$project/_apis/git/repositories/$($repo.id)/refs?filter=heads/&api-version=7.1-preview.1" -Headers $headers -Method Get
+  # Фильтруем репозитории по префиксу 'mana-'
+  $filteredRepos = $repos.value | Where-Object { $_.name -match "^mana-.*" }
 
-            foreach ($branch in $branches.value) {
-                # Пропускаем главные ветки
-                if ($branch.name -eq "refs/heads/main" -or $branch.name -eq "refs/heads/develop") {
-                    continue
-                }
+  # === Выводим список веток для каждого репозитория ===
+  foreach ($repo in $filteredRepos) {
+      Write-Host "`n🔹 Репозиторий: $($repo.webUrl)"
 
-                # Получаем дату последнего коммита для ветки
-                $lastCommitDate = Invoke-RestMethod -Uri "https://dev.azure.com/$org/$project/_apis/git/repositories/$($repo.id)/commits?searchCriteria.itemVersion.version=${branch.name#refs/heads/}&$top=1&api-version=7.1-preview.1" -Headers $headers -Method Get
-                $lastCommitDate = $lastCommitDate.value[0].author.date
+      # Получаем список веток
+      $branchesUri = "$API_BASE_URL/$($repo.id)/refs?filter=heads/&api-version=7.1-preview.1"
+      $branches = Invoke-RestMethod -Uri $branchesUri -Headers $headers -Method Get
 
-                # Рассчитываем возраст ветки (в днях)
-                $branchAge = (New-TimeSpan -Start (Get-Date $lastCommitDate) -End (Get-Date)).Days
+      # Текущая дата для сравнения
+      $currentDate = Get-Date
 
-                # Если ветка старше 21 дня, удаляем её
-                if ($branchAge -gt 21) {
-                    Write-Host "🗑 Удаляем ветку $($branch.name), возраст: $branchAge дней"
-                    # Удаляем ветку
-                    Invoke-RestMethod -Uri "https://dev.azure.com/$org/$project/_apis/git/repositories/$($repo.id)/refs?filter=${branch.name#refs/heads/}&api-version=7.1-preview.1" -Headers $headers -Method Delete
-                }
-            }
-        }
-    displayName: "Удаление старых веток из репозиториев с префиксом mana-"
+      # Флаг для проверки, есть ли устаревшие ветки
+      $hasOldBranches = $false
+
+      # Проверяем каждую ветку
+      foreach ($branch in $branches.value) {
+          $branchName = $branch.name -replace 'refs/heads/', ''
+
+          # Получаем информацию о последнем изменении ветки
+          $branchDetailUri = "$API_BASE_URL/$($repo.id)/refs/$($branch.name)?api-version=7.1-preview.1"
+          $branchDetail = Invoke-RestMethod -Uri $branchDetailUri -Headers $headers -Method Get
+
+          # Проверяем, есть ли данные о коммитах
+          if ($branchDetail.value.Count -eq 0 -or -not $branchDetail.value[0].creator) {
+              Write-Host "  ⚠️  Ветка '$branchName' не содержит коммитов — пропускаем"
+              continue
+          }
+
+          # Дата последнего обновления ветки
+          $lastCommitDate = Get-Date $branchDetail.value[0].creator.date
+
+          # Проверяем, если ветка старее 21 дня
+          $daysSinceLastCommit = ($currentDate - $lastCommitDate).Days
+          if ($daysSinceLastCommit -ge $daysOld) {
+              if (-not $hasOldBranches) {
+                  Write-Host "  ⚠️  Устаревшие ветки (не обновлялись $daysOld дней):"
+                  $hasOldBranches = $true
+              }
+              Write-Host "    - $branchName (Последний коммит: $lastCommitDate, $daysSinceLastCommit дней назад)"
+          }
+      }
+
+      # Если устаревших веток нет
+      if (-not $hasOldBranches) {
+          Write-Host "  ✅ Нет устаревших веток"
+      }
+  }
