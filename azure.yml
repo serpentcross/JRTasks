@@ -54,24 +54,30 @@ steps:
               continue
           }
 
-          # Получаем информацию о последнем коммите
-          $commitUri = "$API_BASE_URL/$($repo.id)/commits?searchCriteria.itemVersion.version=$branchName&`$top=1&api-version=7.1-preview.1"
-          $commitInfo = Invoke-RestMethod -Uri $commitUri -Headers $headers -Method Get
+          # Получаем информацию о последнем коммите через Commits API
+          $commitsUri = "$API_BASE_URL/$($repo.id)/commits?`$top=1&searchCriteria.itemVersion.version=$branchName&api-version=7.1-preview.1"
 
-          # Если нет коммитов, пропускаем
-          if (-not $commitInfo.value) {
-              Write-Host "    - $branchName (⚠️ Нет коммитов!)"
+          try {
+              $commitData = Invoke-RestMethod -Uri $commitsUri -Headers $headers -Method Get
+          } catch {
+              Write-Host "  ⚠️  Ошибка при получении коммитов для '$branchName' (возможно, ветка пустая или удалена) — пропускаем"
               continue
           }
 
-          # Дата последнего коммита
-          $lastCommitDate = Get-Date $commitInfo.value[0].author.date
+          # Проверяем, есть ли коммиты в ветке
+          if (-not $commitData.value) {
+              Write-Host "  ⚠️  Ветка '$branchName' не содержит коммитов — пропускаем"
+              continue
+          }
 
-          # Проверяем, если коммит был сделан более 30 дней назад
+          # Получаем дату последнего коммита
+          $lastCommitDate = Get-Date $commitData.value[0].author.date
+
+          # Проверяем, если ветка старее 21 дня
           $daysSinceLastCommit = ($currentDate - $lastCommitDate).Days
           if ($daysSinceLastCommit -ge $daysOld) {
               if (-not $hasOldBranches) {
-                  Write-Host "  ⚠️  Устаревшие ветки (существуют $daysOld+ дней без коммитов):"
+                  Write-Host "  ⚠️  Устаревшие ветки (не обновлялись $daysOld дней):"
                   $hasOldBranches = $true
               }
               Write-Host "    - $branchName (Последний коммит: $lastCommitDate, $daysSinceLastCommit дней назад)"
